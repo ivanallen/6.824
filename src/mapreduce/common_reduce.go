@@ -1,5 +1,11 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"io"
+	"os"
+)
+
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
@@ -44,4 +50,58 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	//
+
+	var reduceFiles []string
+	var files []*os.File
+	var jsonDecoders []*json.Decoder
+	m := make(map[string][]string)
+	for i := 0; i < nMap; i++ {
+		reduceFiles = append(reduceFiles, reduceName(jobName, i, reduceTask))
+	}
+
+	for _, filename := range reduceFiles {
+		f, err := os.Open(filename)
+		if err != nil {
+			debug("open file %s error:%v\n", filename, err)
+			continue
+		}
+		files = append(files, f)
+		jsonDecoders = append(jsonDecoders, json.NewDecoder(f))
+	}
+
+	defer func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}()
+
+	debug("json decode number:%v\n", len(jsonDecoders))
+	for _, dec := range jsonDecoders {
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err == io.EOF {
+				break
+			} else if err != nil {
+				debug("json decode error:%v\n", err)
+				break
+			}
+			var v []string
+			ok := false
+			if v, ok = m[kv.Key]; !ok {
+				m[kv.Key] = []string{}
+				v = m[kv.Key]
+			}
+			m[kv.Key] = append(v, kv.Value)
+		}
+	}
+
+	f, err := os.OpenFile(outFile, os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		debug("open file %s error:%v\n", outFile, err)
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	for k, v := range m {
+		enc.Encode(KeyValue{k, reduceF(k, v)})
+	}
 }
