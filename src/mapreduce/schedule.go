@@ -1,6 +1,9 @@
 package mapreduce
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 //
 // schedule() starts and waits for all tasks in the given phase (mapPhase
@@ -30,5 +33,90 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	//
 	// Your code here (Part III, Part IV).
 	//
+	/*
+		var mu sync.Mutex
+		var cond = sync.NewCond(&mu)
+		var workAddrs []string
+		go func() {
+			for workAddr := range registerChan {
+				mu.Lock()
+				workAddrs = append(workAddrs, workAddr)
+				fmt.Printf("1:workAddrs:%v\n", workAddrs)
+				cond.Broadcast()
+				mu.Unlock()
+			}
+		}()
+		var pick = func() func() string {
+			index := 0
+			return func() string {
+				mu.Lock()
+				defer mu.Unlock()
+
+				for len(workAddrs) == 0 {
+					fmt.Printf("2:workAddrs:%v\n", workAddrs)
+					cond.Wait()
+				}
+
+				i := index % len(workAddrs)
+				index = i + 1
+				return workAddrs[i]
+			}
+		}()
+	*/
+
+	var wg sync.WaitGroup
+	if phase == mapPhase {
+		for index, mapFile := range mapFiles {
+			wg.Add(1)
+			go func(index int, mapFile string) {
+				retry := true
+				for retry {
+					retry = false
+					doTaskArgs := &DoTaskArgs{
+						JobName:       jobName,
+						File:          mapFile,
+						Phase:         mapPhase,
+						TaskNumber:    index,
+						NumOtherPhase: n_other,
+					}
+					workAddr := <-registerChan
+					err := call(workAddr, "Worker.DoTask", doTaskArgs, nil)
+					go func() { registerChan <- workAddr }()
+					if !err {
+						fmt.Printf("call error:%v", err)
+						retry = true
+					}
+				}
+				wg.Done()
+			}(index, mapFile)
+		}
+		wg.Wait()
+	} else {
+		for i := 0; i < nReduce; i++ {
+			wg.Add(1)
+			go func(index int) {
+				retry := true
+				for retry {
+					retry = false
+					doTaskArgs := &DoTaskArgs{
+						JobName:       jobName,
+						Phase:         reducePhase,
+						TaskNumber:    index,
+						NumOtherPhase: n_other,
+					}
+					workAddr := <-registerChan
+					err := call(workAddr, "Worker.DoTask", doTaskArgs, nil)
+					go func() { registerChan <- workAddr }()
+					if !err {
+						fmt.Printf("call error:%v", err)
+						retry = true
+					}
+				}
+				wg.Done()
+			}(i)
+		}
+		wg.Wait()
+	}
+
 	fmt.Printf("Schedule: %v done\n", phase)
 }
